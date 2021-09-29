@@ -22,7 +22,7 @@ import android.content.Intent;
 import android.content.res.AssetManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
-import android.support.annotation.Keep;
+import com.tencent.tinker.anno.Keep;
 
 /**
  * Created by zhangshaowen on 16/7/28.
@@ -124,6 +124,12 @@ public abstract class ApplicationLike implements ApplicationLifeCycle {
     @Keep
     public Context getBaseContext(Context base) {
         return base;
+    }
+
+    @Keep
+    public int mzNightModeUseOf() {
+        // Return 1 for default according to MeiZu's announcement.
+        return 1;
     }
 }
 

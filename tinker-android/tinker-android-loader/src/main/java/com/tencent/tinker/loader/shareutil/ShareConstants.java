@@ -51,6 +51,7 @@ public class ShareConstants {
 
     public static final String DEX_META_FILE               = "assets/dex_meta.txt";
     public static final String DEX_PATH                    = "dex";
+    public static final String ARKHOTFIX_PATH = "arkHot";
     public static final String DEFAULT_DEX_OPTIMIZE_PATH   = "odex";
     public static final String ANDROID_O_DEX_OPTIMIZE_PATH = "oat";
 
@@ -64,6 +65,7 @@ public class ShareConstants {
 
     public static final String TEST_DEX_NAME            = "test.dex";
     public static final String CLASS_N_APK_NAME         = "tinker_classN.apk";
+    public static final String ARKHOT_PATCH_NAME = "patch.apk";
 
     public static final Pattern CLASS_N_PATTERN = Pattern.compile("classes(?:[2-9]?|[1-9][0-9]+)\\.dex(\\.jar)?");
 
@@ -89,12 +91,14 @@ public class ShareConstants {
     public static final String RES_PATTERN_TITLE   = "pattern:";
     public static final String RES_STORE_TITLE     = "store:";
 
+    public static final String ARKHOT_META_FILE = "assets/arkHot_meta.txt";
 
     public static final String DEXMODE_RAW = "raw";
     public static final String DEXMODE_JAR = "jar";
     public static final String DEX_IN_JAR  = "classes.dex";
 
     public static final String PATCH_DIRECTORY_NAME       = "tinker";
+    public static final String PATCH_DIRECTORY_NAME_SPEC  = "wc_tinker_dir";
     public static final String PATCH_TEMP_DIRECTORY_NAME  = "tinker_temp";
     public static final String PATCH_TEMP_LAST_CRASH_NAME = "tinker_last_crash";
 
@@ -133,14 +137,16 @@ public class ShareConstants {
     public static final int TYPE_LIBRARY     = 5;
     public static final int TYPE_RESOURCE    = 6;
     public static final int TYPE_CLASS_N_DEX = 7;
+    public static final int TYPE_ARKHOT_SO = 8;
 
 
     public static final int TINKER_DISABLE             = 0x00;
     public static final int TINKER_DEX_MASK            = 0x01;
     public static final int TINKER_NATIVE_LIBRARY_MASK = 0x02;
     public static final int TINKER_RESOURCE_MASK       = 0x04;
-    public static final int TINKER_DEX_AND_LIBRARY     = TINKER_DEX_MASK | TINKER_NATIVE_LIBRARY_MASK;
-    public static final int TINKER_ENABLE_ALL          = TINKER_DEX_MASK | TINKER_NATIVE_LIBRARY_MASK | TINKER_RESOURCE_MASK;
+    public static final int TINKER_ARKHOT_MASK = 0x08;
+    public static final int TINKER_DEX_AND_LIBRARY     = TINKER_DEX_MASK | TINKER_NATIVE_LIBRARY_MASK | TINKER_ARKHOT_MASK;
+    public static final int TINKER_ENABLE_ALL          = TINKER_DEX_MASK | TINKER_NATIVE_LIBRARY_MASK | TINKER_RESOURCE_MASK | TINKER_ARKHOT_MASK;
 
     //load error code
     public static final int ERROR_LOAD_OK                                      = 0;
@@ -171,6 +177,8 @@ public class ShareConstants {
     public static final int ERROR_LOAD_PATCH_VERSION_RESOURCE_LOAD_EXCEPTION      = -23;
     public static final int ERROR_LOAD_PATCH_VERSION_RESOURCE_MD5_MISMATCH        = -24;
     public static final int ERROR_LOAD_PATCH_UNCAUGHT_EXCEPTION                   = -25;
+    // -26 & -27 is used by WeChat internal logic.
+    public static final int ERROR_LOAD_PATCH_BAIL_HACK_FAILURE                    = -28;
 
     public static final int ERROR_LOAD_GET_INTENT_FAIL = -10000;
 

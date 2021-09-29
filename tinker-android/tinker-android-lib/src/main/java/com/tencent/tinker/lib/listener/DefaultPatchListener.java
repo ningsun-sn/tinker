@@ -16,9 +16,14 @@
 
 package com.tencent.tinker.lib.listener;
 
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.IBinder;
 import android.text.TextUtils;
 
+import com.tencent.tinker.lib.service.TinkerPatchForeService;
 import com.tencent.tinker.lib.service.TinkerPatchService;
 import com.tencent.tinker.lib.tinker.Tinker;
 import com.tencent.tinker.lib.tinker.TinkerLoadResult;
@@ -31,11 +36,14 @@ import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
 
 import java.io.File;
 
+import static android.content.Context.BIND_AUTO_CREATE;
+
 /**
  * Created by zhangshaowen on 16/3/14.
  */
 public class DefaultPatchListener implements PatchListener {
     protected final Context context;
+    private ServiceConnection connection;
 
     public DefaultPatchListener(Context context) {
         this.context = context;
@@ -54,11 +62,43 @@ public class DefaultPatchListener implements PatchListener {
         final String patchMD5 = SharePatchFileUtil.getMD5(patchFile);
         final int returnCode = patchCheck(path, patchMD5);
         if (returnCode == ShareConstants.ERROR_PATCH_OK) {
+            runForgService();
             TinkerPatchService.runPatchService(context, path);
         } else {
             Tinker.with(context).getLoadReporter().onLoadPatchListenerReceiveFail(new File(path), returnCode);
         }
         return returnCode;
+    }
+
+
+    private void runForgService() {
+        try {
+            connection = new ServiceConnection() {
+                @Override
+                public void onServiceConnected(ComponentName name, IBinder service) {
+                }
+
+                @Override
+                public void onServiceDisconnected(ComponentName name) {
+                    if (context != null && connection != null) {
+                        try {
+                            //Tinker在完成补丁后会尝试kill掉patch进程，如果不unbind会导致patch进程重启
+                            context.unbindService(connection);
+                        } catch (Throwable ignored) {
+                            // Ignored.
+                        }
+                    }
+                }
+
+                @Override
+                public void onBindingDied(ComponentName name) {
+                }
+            };
+            Intent innerForgIntent = new Intent(context, TinkerPatchForeService.class);
+            context.bindService(innerForgIntent, connection, BIND_AUTO_CREATE);
+        } catch (Throwable ex) {
+            //ignore forground service start error
+        }
     }
 
     protected int patchCheck(String path, String patchMd5) {
@@ -88,31 +128,33 @@ public class DefaultPatchListener implements PatchListener {
             return ShareConstants.ERROR_PATCH_JIT;
         }
 
-        Tinker tinker = Tinker.with(context);
+        final TinkerLoadResult loadResult = manager.getTinkerLoadResultIfPresent();
+        // only call repair on main process
+        final boolean repairOptNeeded = manager.isMainProcess()
+                && loadResult != null && loadResult.useInterpretMode;
 
-        if (tinker.isTinkerLoaded()) {
-            TinkerLoadResult tinkerLoadResult = tinker.getTinkerLoadResultIfPresent();
-            if (tinkerLoadResult != null && !tinkerLoadResult.useInterpretMode) {
-                String currentVersion = tinkerLoadResult.currentVersion;
+        if (!repairOptNeeded) {
+            if (manager.isTinkerLoaded() && loadResult != null) {
+                String currentVersion = loadResult.currentVersion;
                 if (patchMd5.equals(currentVersion)) {
                     return ShareConstants.ERROR_PATCH_ALREADY_APPLY;
                 }
             }
-        }
 
-        // Hit if we have already applied patch but main process did not restart.
-        final String patchDirectory = manager.getPatchDirectory().getAbsolutePath();
-        File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(patchDirectory);
-        File patchInfoFile = SharePatchFileUtil.getPatchInfoFile(patchDirectory);
-        try {
-            final SharePatchInfo currInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
-            if (currInfo != null && !ShareTinkerInternals.isNullOrNil(currInfo.newVersion) && !currInfo.isRemoveNewVersion) {
-                if (patchMd5.equals(currInfo.newVersion)) {
-                    return ShareConstants.ERROR_PATCH_ALREADY_APPLY;
+            // Hit if we have already applied patch but main process did not restart.
+            final String patchDirectory = manager.getPatchDirectory().getAbsolutePath();
+            File patchInfoLockFile = SharePatchFileUtil.getPatchInfoLockFile(patchDirectory);
+            File patchInfoFile = SharePatchFileUtil.getPatchInfoFile(patchDirectory);
+            try {
+                final SharePatchInfo currInfo = SharePatchInfo.readAndCheckPropertyWithLock(patchInfoFile, patchInfoLockFile);
+                if (currInfo != null && !ShareTinkerInternals.isNullOrNil(currInfo.newVersion) && !currInfo.isRemoveNewVersion) {
+                    if (patchMd5.equals(currInfo.newVersion)) {
+                        return ShareConstants.ERROR_PATCH_ALREADY_APPLY;
+                    }
                 }
+            } catch (Throwable ignored) {
+                // Ignored.
             }
-        } catch (Throwable ignored) {
-            // Ignored.
         }
 
         if (!UpgradePatchRetry.getInstance(context).onPatchListenerCheck(patchMd5)) {

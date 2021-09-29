@@ -16,15 +16,32 @@
 
 package com.tencent.tinker.loader;
 
+import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.pm.PackageManager;
+import android.content.pm.PackageManager$DexModuleRegisterCallback;
+import android.os.Binder;
 import android.os.Build;
-import android.util.Log;
+import android.os.IBinder;
+import android.os.IInterface;
+import android.os.Parcel;
+import android.os.RemoteException;
+import android.os.SystemClock;
 
 import com.tencent.tinker.loader.shareutil.ShareFileLockHelper;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
+import com.tencent.tinker.loader.shareutil.ShareReflectUtil;
+import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
+import com.tencent.tinker.loader.shareutil.ShareTinkerLog;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -53,37 +70,38 @@ public final class TinkerDexOptimizer {
      * @param cb
      * @return If all dexes are optimized successfully, return true. Otherwise return false.
      */
-    public static boolean optimizeAll(Collection<File> dexFiles, File optimizedDir, ResultCallback cb) {
-        return optimizeAll(dexFiles, optimizedDir, false, null, cb);
+    public static boolean optimizeAll(Context context, Collection<File> dexFiles, File optimizedDir,
+                                      boolean useDLC, ResultCallback cb) {
+        return optimizeAll(context, dexFiles, optimizedDir, false, useDLC, null, cb);
     }
 
-    public static boolean optimizeAll(Collection<File> dexFiles, File optimizedDir,
-                                      boolean useInterpretMode, String targetISA, ResultCallback cb) {
+    public static boolean optimizeAll(Context context, Collection<File> dexFiles, File optimizedDir,
+                                      boolean useInterpretMode, boolean useDLC,
+                                      String targetISA, ResultCallback cb) {
         ArrayList<File> sortList = new ArrayList<>(dexFiles);
-        // sort input dexFiles with its file length
+        // sort input dexFiles with its file length in reverse order.
         Collections.sort(sortList, new Comparator<File>() {
             @Override
             public int compare(File lhs, File rhs) {
-                long diffSize = lhs.length() - rhs.length();
-                if (diffSize > 0) {
+                final long lhsSize = lhs.length();
+                final long rhsSize = rhs.length();
+                if (lhsSize < rhsSize) {
                     return 1;
-                } else if (diffSize == 0) {
+                } else if (lhsSize == rhsSize) {
                     return 0;
                 } else {
                     return -1;
                 }
             }
         });
-        Collections.reverse(sortList);
         for (File dexFile : sortList) {
-            OptimizeWorker worker = new OptimizeWorker(dexFile, optimizedDir, useInterpretMode, targetISA, cb);
+            OptimizeWorker worker = new OptimizeWorker(context, dexFile, optimizedDir, useInterpretMode,
+                  useDLC, targetISA, cb);
             if (!worker.run()) {
                 return false;
             }
         }
         return true;
-
-
     }
 
     public interface ResultCallback {
@@ -96,26 +114,30 @@ public final class TinkerDexOptimizer {
 
     private static class OptimizeWorker {
         private static String targetISA = null;
-
-        private final File           dexFile;
-        private final File           optimizedDir;
-        private final boolean        useInterpretMode;
+        private final Context context;
+        private final File dexFile;
+        private final File optimizedDir;
+        private final boolean useInterpretMode;
+        private final boolean useDLC;
         private final ResultCallback callback;
 
-        OptimizeWorker(File dexFile, File optimizedDir, boolean useInterpretMode, String targetISA, ResultCallback cb) {
+        OptimizeWorker(Context context, File dexFile, File optimizedDir, boolean useInterpretMode,
+                       boolean useDLC, String targetISA, ResultCallback cb) {
+            this.context = context;
             this.dexFile = dexFile;
             this.optimizedDir = optimizedDir;
             this.useInterpretMode = useInterpretMode;
+            this.useDLC = useDLC;
             this.callback = cb;
             this.targetISA = targetISA;
         }
 
-        public boolean run() {
+        boolean run() {
             try {
                 if (!SharePatchFileUtil.isLegalFile(dexFile)) {
                     if (callback != null) {
                         callback.onFailed(dexFile, optimizedDir,
-                            new IOException("dex file " + dexFile.getAbsolutePath() + " is not exist!"));
+                                new IOException("dex file " + dexFile.getAbsolutePath() + " is not exist!"));
                         return false;
                     }
                 }
@@ -123,22 +145,241 @@ public final class TinkerDexOptimizer {
                     callback.onStart(dexFile, optimizedDir);
                 }
                 String optimizedPath = SharePatchFileUtil.optimizedPathFor(this.dexFile, this.optimizedDir);
-                if (useInterpretMode) {
-                    interpretDex2Oat(dexFile.getAbsolutePath(), optimizedPath);
-                } else {
-                    DexFile.loadDex(dexFile.getAbsolutePath(), optimizedPath, 0);
+                if (!ShareTinkerInternals.isArkHotRuning()) {
+                    if (useInterpretMode) {
+                        interpretDex2Oat(dexFile.getAbsolutePath(), optimizedPath);
+                    } else if (Build.VERSION.SDK_INT >= 26
+                            || (Build.VERSION.SDK_INT >= 25 && Build.VERSION.PREVIEW_SDK_INT != 0)) {
+                        NewClassLoaderInjector.triggerDex2Oat(context, optimizedDir,
+                                                              useDLC, dexFile.getAbsolutePath());
+                        // Android Q is significantly slowed down by Fallback Dex Loading procedure, so we
+                        // trigger background dexopt to generate executable odex here.
+                        triggerPMDexOptOnDemand(context, dexFile.getAbsolutePath(), optimizedPath);
+                    } else {
+                        DexFile.loadDex(dexFile.getAbsolutePath(), optimizedPath, 0);
+                    }
                 }
                 if (callback != null) {
                     callback.onSuccess(dexFile, optimizedDir, new File(optimizedPath));
                 }
             } catch (final Throwable e) {
-                Log.e(TAG, "Failed to optimize dex: " + dexFile.getAbsolutePath(), e);
+                ShareTinkerLog.e(TAG, "Failed to optimize dex: " + dexFile.getAbsolutePath(), e);
                 if (callback != null) {
                     callback.onFailed(dexFile, optimizedDir, e);
                     return false;
                 }
             }
             return true;
+        }
+
+        private static void triggerPMDexOptOnDemand(Context context, String dexPath, String oatPath) {
+            if (Build.VERSION.SDK_INT < 29) {
+                // Only do this trick on Android Q, R devices.
+                ShareTinkerLog.w(TAG, "[+] Not API 29, 30 device, skip fixing.");
+                return;
+            }
+
+            ShareTinkerLog.i(TAG, "[+] Hit target device, do fix logic now.");
+
+            try {
+                final File oatFile = new File(oatPath);
+                if (oatFile.exists()) {
+                    ShareTinkerLog.i(TAG, "[+] Odex file exists, skip bg-dexopt triggering.");
+                    return;
+                }
+                boolean performDexOptSecondarySuccess = true;
+                try {
+                    performDexOptSecondary(context, oatPath);
+                } catch (Throwable thr) {
+                    ShareTinkerLog.printErrStackTrace(TAG, thr, "[-] Fail to call performDexOptSecondary.");
+                    performDexOptSecondarySuccess = false;
+                }
+                // Take a rest. And hope any asynchronous mechanism may generate odex we need.
+                SystemClock.sleep(1000);
+                if (!performDexOptSecondarySuccess || !oatFile.exists()) {
+                    if ("huawei".equalsIgnoreCase(Build.MANUFACTURER) || "honor".equalsIgnoreCase(Build.MANUFACTURER)) {
+                        registerDexModule(context, dexPath, oatPath);
+                    }
+                }
+                if (oatFile.exists()) {
+                    ShareTinkerLog.i(TAG, "[+] Bg-dexopt was triggered successfully.");
+                } else {
+                    throw new IllegalStateException("Bg-dexopt was triggered, but no odex file was generated.");
+                }
+            } catch (Throwable thr) {
+                ShareTinkerLog.printErrStackTrace(TAG, thr, "[-] Fail to call triggerPMDexOptAsyncOnDemand.");
+            }
+        }
+
+        public static void performDexOptSecondary(Context context, String oatPath) throws IllegalStateException {
+            try {
+                ShareTinkerLog.i(TAG, "[+] Start trigger secondary dexopt.");
+                final File oatFile = new File(oatPath);
+                final int transactionCode = queryPerformDexOptSecondaryTransactionCode();
+                final String packageName = context.getPackageName();
+                final String targetCompilerFilter = "speed";
+                final boolean force = false;
+
+                final Class<?> serviceManagerClazz = Class.forName("android.os.ServiceManager");
+                final Method getServiceMethod = ShareReflectUtil.findMethod(serviceManagerClazz, "getService", String.class);
+                final IBinder pmBinder = (IBinder) getServiceMethod.invoke(null, "package");
+                if (pmBinder == null) {
+                    throw new IllegalStateException("Fail to get pm binder.");
+                }
+                final int maxRetries = 20;
+                for (int i = 0; i < maxRetries; ++i) {
+                    Throwable pendingThr = null;
+                    try {
+                        performDexOptSecondaryImpl(pmBinder, transactionCode, packageName, targetCompilerFilter, force);
+                    } catch (Throwable thr) {
+                        pendingThr = thr;
+                    }
+                    SystemClock.sleep(3000);
+                    if (oatFile.exists()) {
+                        break;
+                    }
+                    if (i == maxRetries - 1) {
+                        if (pendingThr != null) {
+                            throw pendingThr;
+                        }
+                        if (!oatFile.exists()) {
+                            throw new IllegalStateException("Expected oat file: " + oatFile.getAbsolutePath() + " does not exist.");
+                        }
+                    }
+                }
+                ShareTinkerLog.i(TAG, "[+] Secondary dexopt done.");
+            } catch (IllegalStateException e) {
+                throw e;
+            } catch (Throwable thr) {
+                throw new IllegalStateException("Failure on triggering secondary dexopt", thr);
+            }
+        }
+
+        private static int queryPerformDexOptSecondaryTransactionCode() throws UnsupportedOperationException {
+            try {
+                final Method getDeclaredFieldMethod = ShareReflectUtil.findMethod(Class.class, "getDeclaredField", String.class);
+                getDeclaredFieldMethod.setAccessible(true);
+                final Field cstField = (Field) getDeclaredFieldMethod.invoke(Class.forName("android.content.pm.IPackageManager$Stub"),
+                      "TRANSACTION_performDexOptSecondary");
+                cstField.setAccessible(true);
+                return (int) cstField.get(null);
+            } catch (Throwable thr) {
+                throw new UnsupportedOperationException("Cannot query transaction code of performDexOptSecondary.", thr);
+            }
+        }
+
+        private static final String PM_INTERFACE_DESCRIPTOR = "android.content.pm.IPackageManager";
+
+        private static void performDexOptSecondaryImpl(IBinder pmBinder, int transactionCode, String packageName, String compileFilter, boolean force) {
+            Parcel data = null;
+            Parcel reply = null;
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                data = Parcel.obtain();
+                reply = Parcel.obtain();
+                boolean result;
+                data.writeInterfaceToken(PM_INTERFACE_DESCRIPTOR);
+                data.writeString(packageName);
+                data.writeString(compileFilter);
+                data.writeInt(((force) ? (1) : (0)));
+                boolean status = false;
+                try {
+                    status = pmBinder.transact(transactionCode, data, reply, 0);
+                    if (!status) {
+                        throw new IllegalStateException("Binder transaction failure.");
+                    }
+                } catch (RemoteException e) {
+                    throw new IllegalStateException(e);
+                }
+                try {
+                    reply.readException();
+                } catch (Throwable thr) {
+                    throw new IllegalStateException(thr);
+                }
+                result = (0 != reply.readInt());
+                if (!result) {
+                    ShareTinkerLog.w(TAG, "[!] System API return false.");
+                }
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+                if (reply != null) {
+                    reply.recycle();
+                }
+                if (data != null) {
+                    data.recycle();
+                }
+            }
+        }
+
+        private static void registerDexModule(Context context, String dexPath, String oatPath) throws IllegalStateException {
+            try {
+                final PackageManager syncPM = getSynchronizedPackageManager(context);
+                final Method registerDexModuleMethod = ShareReflectUtil.findMethod(syncPM.getClass(),
+                "registerDexModule", String.class, PackageManager$DexModuleRegisterCallback.class);
+                final File oatFile = new File(oatPath);
+                final int maxRetries = 2;
+                for (int i = 0; i < maxRetries; ++i) {
+                    Throwable pendingThr = null;
+                    try {
+                        registerDexModuleMethod.invoke(syncPM, dexPath, new PackageManager$DexModuleRegisterCallback() {
+                            @Override
+                            public void onDexModuleRegistered(String dexModulePath, boolean success, String message) {
+                                ShareTinkerLog.i(TAG, "[+] onDexModuleRegistered, path: %s, is_success: %s, msg: %s", dexModulePath, success, message);
+                            }
+                        });
+                    } catch (Throwable thr) {
+                        pendingThr = thr;
+                    }
+                    SystemClock.sleep(3000);
+                    if (oatFile.exists()) {
+                        break;
+                    }
+                    if (i == maxRetries - 1) {
+                        if (pendingThr != null) {
+                            throw pendingThr;
+                        }
+                        if (!oatFile.exists()) {
+                            throw new IllegalStateException("Expected oat file: " + oatFile.getAbsolutePath() + " does not exist.");
+                        }
+                    }
+                }
+            } catch (IllegalStateException e) {
+                throw e;
+            } catch (Throwable thr) {
+                throw new IllegalStateException("Fail to call registerDexModule.", thr);
+            }
+        }
+
+        private static final PackageManager[] CACHED_SYNC_PM  = {null};
+
+        private static PackageManager getSynchronizedPackageManager(Context context) throws Throwable {
+            synchronized (CACHED_SYNC_PM) {
+                if (CACHED_SYNC_PM[0] != null) {
+                    return CACHED_SYNC_PM[0];
+                }
+                final Class<?> serviceManagerClazz = Class.forName("android.os.ServiceManager");
+                final Method getServiceMethod = ShareReflectUtil.findMethod(serviceManagerClazz, "getService", String.class);
+                final IBinder pmBinder = (IBinder) getServiceMethod.invoke(null, "package");
+                final IBinder syncPMBinder = (IBinder) Proxy.newProxyInstance(context.getClassLoader(), pmBinder.getClass().getInterfaces(), new InvocationHandler() {
+                    @Override
+                    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+                        if ("transact".equals(method.getName())) {
+                            // FLAG_ONEWAY => NONE.
+                            args[3] = 0;
+                        }
+                        return method.invoke(pmBinder, args);
+                    }
+                });
+                final Class<?> pmStubClazz = Class.forName("android.content.pm.IPackageManager$Stub");
+                final Method asInterfaceMethod = ShareReflectUtil.findMethod(pmStubClazz, "asInterface", IBinder.class);
+                final IInterface pmItf = (IInterface) asInterfaceMethod.invoke(null, syncPMBinder);
+                final Object contextImpl = (context instanceof ContextWrapper ? ((ContextWrapper) context).getBaseContext() : context);
+                final Class<?> appPMClazz = Class.forName("android.app.ApplicationPackageManager");
+                final Constructor<?> appPMCtor = appPMClazz.getDeclaredConstructor(contextImpl.getClass(), pmItf.getClass().getInterfaces()[0]);
+                final PackageManager res = (PackageManager) appPMCtor.newInstance(contextImpl, pmItf);
+                CACHED_SYNC_PM[0] = res;
+                return res;
+            }
         }
 
         private void interpretDex2Oat(String dexFilePath, String oatFilePath) throws IOException {
@@ -190,7 +431,7 @@ public final class TinkerDexOptimizer {
                         fileLock.close();
                     }
                 } catch (IOException e) {
-                    Log.w(TAG, "release interpret Lock error", e);
+                    ShareTinkerLog.w(TAG, "release interpret Lock error", e);
                 }
             }
         }

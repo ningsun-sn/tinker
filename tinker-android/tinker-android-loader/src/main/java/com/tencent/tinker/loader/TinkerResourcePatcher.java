@@ -27,6 +27,7 @@ import android.util.Log;
 import com.tencent.tinker.loader.shareutil.ShareConstants;
 import com.tencent.tinker.loader.shareutil.SharePatchFileUtil;
 import com.tencent.tinker.loader.shareutil.ShareReflectUtil;
+import com.tencent.tinker.loader.shareutil.ShareTinkerLog;
 
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
@@ -57,6 +58,7 @@ class TinkerResourcePatcher {
 
     // method
     private static Method addAssetPathMethod = null;
+    private static Method addAssetPathAsSharedLibraryMethod = null;
     private static Method ensureStringBlocksMethod = null;
 
     // field
@@ -95,6 +97,10 @@ class TinkerResourcePatcher {
         // Create a new AssetManager instance and point it to the resources
         final AssetManager assets = context.getAssets();
         addAssetPathMethod = findMethod(assets, "addAssetPath", String.class);
+        if (shouldAddSharedLibraryAssets(context.getApplicationInfo())) {
+            addAssetPathAsSharedLibraryMethod =
+                    findMethod(assets, "addAssetPathAsSharedLibrary", String.class);
+        }
 
         // Kitkat needs this method call, Lollipop doesn't. However, it doesn't seem to cause any harm
         // in L, so we do it unconditionally.
@@ -199,6 +205,20 @@ class TinkerResourcePatcher {
             throw new IllegalStateException("Could not create new AssetManager");
         }
 
+        // Add SharedLibraries to AssetManager for resolve system resources not found issue
+        // This influence SharedLibrary Package ID
+        if (shouldAddSharedLibraryAssets(appInfo)) {
+            for (String sharedLibrary : appInfo.sharedLibraryFiles) {
+                if (!sharedLibrary.endsWith(".apk")) {
+                    continue;
+                }
+                if (((Integer) addAssetPathAsSharedLibraryMethod.invoke(newAssetManager, sharedLibrary)) == 0) {
+                    throw new IllegalStateException("AssetManager add SharedLibrary Fail");
+                }
+                Log.i(TAG, "addAssetPathAsSharedLibrary " + sharedLibrary);
+            }
+        }
+
         // Kitkat needs this method call, Lollipop doesn't. However, it doesn't seem to cause any harm
         // in L, so we do it unconditionally.
         if (stringBlocksField != null && ensureStringBlocksMethod != null) {
@@ -258,7 +278,7 @@ class TinkerResourcePatcher {
         // if (!isMiuiSystem) {
         //     return;
         // }
-        Log.w(TAG, "try to clear typedArray cache!");
+        ShareTinkerLog.w(TAG, "try to clear typedArray cache!");
         // Clear typedArray cache.
         try {
             final Field typedArrayPoolField = findField(Resources.class, "mTypedArrayPool");
@@ -270,7 +290,7 @@ class TinkerResourcePatcher {
                 }
             }
         } catch (Throwable ignored) {
-            Log.e(TAG, "clearPreloadTypedArrayIssue failed, ignore error: " + ignored);
+            ShareTinkerLog.e(TAG, "clearPreloadTypedArrayIssue failed, ignore error: " + ignored);
         }
     }
 
@@ -279,12 +299,17 @@ class TinkerResourcePatcher {
         try {
             is = context.getAssets().open(TEST_ASSETS_VALUE);
         } catch (Throwable e) {
-            Log.e(TAG, "checkResUpdate failed, can't find test resource assets file " + TEST_ASSETS_VALUE + " e:" + e.getMessage());
+            ShareTinkerLog.e(TAG, "checkResUpdate failed, can't find test resource assets file " + TEST_ASSETS_VALUE + " e:" + e.getMessage());
             return false;
         } finally {
             SharePatchFileUtil.closeQuietly(is);
         }
-        Log.i(TAG, "checkResUpdate success, found test resource assets file " + TEST_ASSETS_VALUE);
+        ShareTinkerLog.i(TAG, "checkResUpdate success, found test resource assets file " + TEST_ASSETS_VALUE);
         return true;
+    }
+
+    private static boolean shouldAddSharedLibraryAssets(ApplicationInfo applicationInfo) {
+        return SDK_INT >= Build.VERSION_CODES.N && applicationInfo != null &&
+                applicationInfo.sharedLibraryFiles != null;
     }
 }

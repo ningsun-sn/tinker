@@ -4,7 +4,7 @@ dependencies {
     if (is_gradle_3()) {
         implementation fileTree(dir: 'libs', include: ['*.jar'])
         testImplementation 'junit:junit:4.12'
-        implementation "com.android.support:appcompat-v7:23.1.1"
+        implementation "androidx.appcompat:appcompat:1.1.0"
         api("com.tencent.tinker:tinker-android-lib:${TINKER_VERSION}") { changing = true }
 
         // Maven local cannot handle transist dependencies.
@@ -12,19 +12,21 @@ dependencies {
 
         annotationProcessor("com.tencent.tinker:tinker-android-anno:${TINKER_VERSION}") { changing = true }
         compileOnly("com.tencent.tinker:tinker-android-anno:${TINKER_VERSION}") { changing = true }
+        compileOnly("com.tencent.tinker:tinker-android-anno-support:${TINKER_VERSION}") { changing = true }
 
-        implementation "com.android.support:multidex:1.0.1"
+        implementation "androidx.multidex:multidex:2.0.1"
         //use to test multiDex
 //    implementation group: 'com.google.guava', name: 'guava', version: '19.0'
 //    implementation "org.scala-lang:scala-library:2.11.7"
     } else {
         compile fileTree(dir: 'libs', include: ['*.jar'])
         testCompile 'junit:junit:4.12'
-        compile "com.android.support:appcompat-v7:23.1.1"
+        compile "androidx.appcompat:appcompat:1.1.0"
         compile("com.tencent.tinker:tinker-android-lib:${TINKER_VERSION}") { changing = true }
         provided("com.tencent.tinker:tinker-android-anno:${TINKER_VERSION}") { changing = true }
+        provided("com.tencent.tinker:tinker-android-anno-support:${TINKER_VERSION}") { changing = true }
 
-        compile "com.android.support:multidex:1.0.1"
+        compile "androidx.multidex:multidex:2.0.1"
 
         //use to test multiDex
 //    compile group: 'com.google.guava', name: 'guava', version: '19.0'
@@ -86,6 +88,7 @@ android {
          * you can use multiDex and install it in your ApplicationLifeCycle implement
          */
         multiDexEnabled true
+        multiDexKeepProguard file("tinker_multidexkeep.pro")
         /**
          * buildConfig can change during patch!
          * we can use the newly value when patch
@@ -132,6 +135,10 @@ android {
         main {
             jniLibs.srcDirs = ['libs']
         }
+    }
+
+    packagingOptions {
+        exclude "/META-INF/**"
     }
 }
 
@@ -418,7 +425,11 @@ if (buildWithTinker()) {
                         if (variant.metaClass.hasProperty(variant, 'packageApplicationProvider')) {
                             def packageAndroidArtifact = variant.packageApplicationProvider.get()
                             if (packageAndroidArtifact != null) {
-                                from new File(packageAndroidArtifact.outputDirectory, variant.outputs.first().apkData.outputFileName)
+                                try {
+                                    from new File(packageAndroidArtifact.outputDirectory.getAsFile().get(), variant.outputs.first().apkData.outputFileName)
+                                } catch (Exception e) {
+                                    from new File(packageAndroidArtifact.outputDirectory, variant.outputs.first().apkData.outputFileName)
+                                }
                             } else {
                                 from variant.outputs.first().mainOutputFile.outputFile
                             }
@@ -431,13 +442,19 @@ if (buildWithTinker()) {
                             fileName.replace("${fileNamePrefix}.apk", "${newFileNamePrefix}.apk")
                         }
 
-                        from "${buildDir}/outputs/mapping/${variant.dirName}/mapping.txt"
+                        def dirName = variant.dirName
+                        if (hasFlavors) {
+                            dirName = taskName
+                        }
+                        from "${buildDir}/outputs/mapping/${dirName}/mapping.txt"
                         into destPath
                         rename { String fileName ->
                             fileName.replace("mapping.txt", "${newFileNamePrefix}-mapping.txt")
                         }
 
-                        from "${buildDir}/intermediates/symbols/${variant.dirName}/R.txt"
+                        from "${buildDir}/intermediates/symbols/${dirName}/R.txt"
+                        from "${buildDir}/intermediates/symbol_list/${dirName}/R.txt"
+                        from "${buildDir}/intermediates/runtime_symbol_list/${dirName}/R.txt"
                         into destPath
                         rename { String fileName ->
                             fileName.replace("R.txt", "${newFileNamePrefix}-R.txt")

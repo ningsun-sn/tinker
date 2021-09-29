@@ -22,7 +22,6 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
-import android.util.Log;
 
 import com.tencent.tinker.lib.service.TinkerPatchService;
 import com.tencent.tinker.loader.shareutil.ShareTinkerInternals;
@@ -63,33 +62,7 @@ public class TinkerServiceInternals extends ShareTinkerInternals {
     }
 
     public static boolean isTinkerPatchServiceRunning(Context context) {
-        final ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-        String serverName = getTinkerPatchServiceName(context);
-        if (serverName == null) {
-            return false;
-        }
-        try {
-            // ActivityManager getRunningAppProcesses()
-            List<ActivityManager.RunningAppProcessInfo> appProcessList = am
-                .getRunningAppProcesses();
-            if (appProcessList == null) {
-                return false;
-            }
-            for (ActivityManager.RunningAppProcessInfo appProcess : appProcessList) {
-                String processName = appProcess.processName;
-                if (processName.equals(serverName)) {
-                    return true;
-                }
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "isTinkerPatchServiceRunning Exception: " + e.toString());
-            return false;
-        } catch (Error e) {
-            Log.e(TAG, "isTinkerPatchServiceRunning Error: " + e.toString());
-            return false;
-        }
-
-        return false;
+        return TinkerPatchService.isRunning(context);
     }
 
 

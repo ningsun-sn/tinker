@@ -1,8 +1,8 @@
 package com.tencent.tinker.loader.hotplug.interceptor;
 
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
 import android.util.Log;
+
+import com.tencent.tinker.loader.shareutil.ShareTinkerLog;
 
 /**
  * Created by tangyinsheng on 2017/7/31.
@@ -14,13 +14,13 @@ public abstract class Interceptor<T_TARGET> {
     private T_TARGET mTarget = null;
     private volatile boolean mInstalled = false;
 
-    protected @Nullable abstract T_TARGET fetchTarget() throws Throwable;
+    protected abstract T_TARGET fetchTarget() throws Throwable;
 
-    protected @NonNull T_TARGET decorate(@Nullable T_TARGET target) throws Throwable {
+    protected T_TARGET decorate(T_TARGET target) throws Throwable {
         return target;
     }
 
-    protected abstract void inject(@Nullable T_TARGET decorated) throws Throwable;
+    protected abstract void inject(T_TARGET decorated) throws Throwable;
 
     public synchronized void install() throws InterceptFailedException {
         try {
@@ -30,7 +30,7 @@ public abstract class Interceptor<T_TARGET> {
             if (decorated != target) {
                 inject(decorated);
             } else {
-                Log.w(TAG, "target: " + target + " was already hooked.");
+                ShareTinkerLog.w(TAG, "target: " + target + " was already hooked.");
             }
             mInstalled = true;
         } catch (Throwable thr) {
